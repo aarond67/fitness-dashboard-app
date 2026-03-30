@@ -67,7 +67,7 @@ export function hourToLabel(hour: number) {
 }
 
 export function occupancyImageName(facility: string) {
-  return facility.replaceAll(" ", "_");
+  return facility.split(" ").join("_");
 }
 
 export async function fetchText(url: string) {
