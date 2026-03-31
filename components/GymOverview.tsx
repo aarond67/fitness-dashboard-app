@@ -43,6 +43,40 @@ export function GymOverview() {
 
   const latest = useMemo(() => latestRows(occupancyRows), [occupancyRows]);
 
+  const topThreePerFacility = useMemo(() => {
+    const grouped: Record<string, BestTimeRow[]> = {};
+
+    bestRows.forEach((row) => {
+      const key = row.facility_name;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(row);
+    });
+
+    const result: BestTimeRow[] = [];
+
+    Object.values(grouped).forEach((rows) => {
+      const topThree = [...rows]
+        .sort((a, b) => Number(a.avg_percent) - Number(b.avg_percent))
+        .slice(0, 3);
+
+      result.push(...topThree);
+    });
+
+    return result.sort((a, b) => {
+      if (a.facility_name !== b.facility_name) {
+        return a.facility_name.localeCompare(b.facility_name);
+      }
+      return Number(a.avg_percent) - Number(b.avg_percent);
+    });
+  }, [bestRows]);
+
+  const bestOverall = useMemo(() => {
+    if (!topThreePerFacility.length) return null;
+    return [...topThreePerFacility].sort(
+      (a, b) => Number(a.avg_percent) - Number(b.avg_percent)
+    )[0];
+  }, [topThreePerFacility]);
+
   return (
     <div className="stack">
       {error ? <div className="card"><p className="error">{error}</p></div> : null}
@@ -97,10 +131,10 @@ export function GymOverview() {
         <section className="card">
           <div className="badge"><TrendingDown size={16} /> Best Known Window</div>
           <div className="kpi">
-            {bestRows.length ? `${hourToLabel(Number(bestRows[0].hour))}` : "--"}
+            {bestOverall ? hourToLabel(Number(bestOverall.hour)) : "--"}
           </div>
           <div className="small">
-            {bestRows.length ? `${bestRows[0].facility_name} · ${bestRows[0].day}` : "Waiting for analysis data"}
+            {bestOverall ? `${bestOverall.facility_name} · ${bestOverall.day}` : "Waiting for analysis data"}
           </div>
         </section>
         <section className="card">
@@ -110,15 +144,15 @@ export function GymOverview() {
         </section>
         <section className="card">
           <div className="badge"><Clock3 size={16} /> Sync Loop</div>
-          <div className="kpi">15 min / 4 hr</div>
-          <div className="small">Scraper every 15 minutes, analysis every 4 hours.</div>
+          <div className="kpi">5 min / 2 hr</div>
+          <div className="small">Scraper every 5 minutes, analysis every 2 hours.</div>
         </section>
       </div>
 
       <section className="card">
         <div className="section-title">
           <h2>Least Busy Time Blocks</h2>
-          <span className="badge">Top slots by facility</span>
+          <span className="badge">Top 3 slots per facility</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -131,7 +165,7 @@ export function GymOverview() {
               </tr>
             </thead>
             <tbody>
-              {bestRows.map((row, index) => (
+              {topThreePerFacility.map((row, index) => (
                 <tr key={`${row.facility_name}-${row.day}-${row.hour}-${index}`}>
                   <td>{row.facility_name}</td>
                   <td>{row.day}</td>
