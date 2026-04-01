@@ -170,7 +170,7 @@ export function GymOverview() {
               {topThreePerFacility.map((row, index) => (
                 <tr key={`${row.facility_name}-${row.day}-${row.hour}-${index}`}>
                   <td>{row.facility_name}</td>
-                  <td>{row.day}</td>
+                  <td>{(row as any).day ?? (row as any).day_of_week}</td>
                   <td>{hourToLabel(Number(row.hour))}</td>
                   <td>{Number(row.avg_percent).toFixed(1)}%</td>
                 </tr>
