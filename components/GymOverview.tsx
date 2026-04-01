@@ -144,7 +144,7 @@ export function GymOverview() {
         </section>
         <section className="card">
           <div className="badge"><Clock3 size={16} /> Sync Loop</div>
-          <div className="kpi">5 min / 2 hr</div>
+          <div className="kpi">15 min / 2 hr</div>
           <div className="small">Scraper every 5 minutes, analysis every 2 hours.</div>
         </section>
       </div>
