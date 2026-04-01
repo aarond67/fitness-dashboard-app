@@ -77,6 +77,35 @@ export function GymOverview() {
     )[0];
   }, [topThreePerFacility]);
 
+  const todayName = useMemo(
+  () =>
+    new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      timeZone: "America/Los_Angeles",
+    }).format(new Date()),
+  []
+);
+
+const bestTodayPerFacility = useMemo(() => {
+  const todaysRows = bestRows.filter((row: any) => {
+    const rowDay = (row as any).day ?? (row as any).day_of_week;
+    return rowDay === todayName;
+  });
+
+  const grouped: Record<string, BestTimeRow> = {};
+
+  todaysRows.forEach((row) => {
+    const key = row.facility_name;
+    if (!grouped[key] || Number(row.avg_percent) < Number(grouped[key].avg_percent)) {
+      grouped[key] = row;
+    }
+  });
+
+  return Object.values(grouped).sort(
+    (a, b) => Number(a.avg_percent) - Number(b.avg_percent)
+  );
+}, [bestRows, todayName]);
+
   return (
     <div className="stack">
       {error ? <div className="card"><p className="error">{error}</p></div> : null}
@@ -85,11 +114,23 @@ export function GymOverview() {
         <section className="card">
           <div className="section-title">
             <h2>Best Time Today</h2>
-            <span className="badge"><Clock3 size={16} /> Live from GitHub data</span>
+            <span className="badge"><Clock3 size={16} /> Best slot today by facility</span>
           </div>
-          <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit", lineHeight: 1.6 }}>
-            {bestTimeText}
-          </pre>
+          <div style={{ display: "grid", gap: 14 }}>
+            {bestTodayPerFacility.length ? (
+              bestTodayPerFacility.map((row, index) => (
+                <div key={`${row.facility_name}-${index}`}>
+                  <div style={{ fontWeight: 600 }}>{row.facility_name}</div>
+                  <div>
+                    {(row as any).day ?? (row as any).day_of_week} at {hourToLabel(Number(row.hour))}
+                  </div>
+                  <div>Avg occupancy: {Number(row.avg_percent).toFixed(1)}%</div>
+                </div>
+              ))
+            ) : (
+              <div>No best-time data yet for {todayName}.</div>
+            )}
+          </div>
         </section>
 
         <section className="card">
