@@ -134,7 +134,9 @@ export function GymOverview() {
             {bestOverall ? hourToLabel(Number(bestOverall.hour)) : "--"}
           </div>
           <div className="small">
-            {bestOverall ? `${bestOverall.facility_name} · ${bestOverall.day}` : "Waiting for analysis data"}
+            {bestOverall
+  ? `${bestOverall.facility_name} · ${(bestOverall as any).day ?? (bestOverall as any).day_of_week ?? ""}`
+  : "Waiting for analysis data"}
           </div>
         </section>
         <section className="card">
