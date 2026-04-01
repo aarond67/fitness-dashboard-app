@@ -15,7 +15,6 @@ const chartFacilities = [
 ];
 
 export function GymOverview() {
-  const [bestTimeText, setBestTimeText] = useState("Loading...");
   const [occupancyRows, setOccupancyRows] = useState<OccupancyRow[]>([]);
   const [bestRows, setBestRows] = useState<BestTimeRow[]>([]);
   const [error, setError] = useState("");
@@ -23,13 +22,11 @@ export function GymOverview() {
   useEffect(() => {
     async function load() {
       try {
-        const [bestTextRaw, occRaw, bestCsvRaw] = await Promise.all([
-          fetchText(`${DEFAULT_BASE_URL}/best_time_today.txt`),
+        const [occRaw, bestCsvRaw] = await Promise.all([
           fetchText(`${DEFAULT_BASE_URL}/ucsd_occupancy_history.csv`),
           fetchText(`${DEFAULT_BASE_URL}/best_times_summary.csv`)
         ]);
 
-        setBestTimeText(bestTextRaw);
         setOccupancyRows(castOccupancy(parseCSV(occRaw)));
         setBestRows(castBestTimes(parseCSV(bestCsvRaw)));
       } catch (err) {
@@ -42,6 +39,15 @@ export function GymOverview() {
   }, []);
 
   const latest = useMemo(() => latestRows(occupancyRows), [occupancyRows]);
+
+  const todayName = useMemo(
+    () =>
+      new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        timeZone: "America/Los_Angeles",
+      }).format(new Date()),
+    []
+  );
 
   const topThreePerFacility = useMemo(() => {
     const grouped: Record<string, BestTimeRow[]> = {};
@@ -71,40 +77,31 @@ export function GymOverview() {
   }, [bestRows]);
 
   const bestOverall = useMemo(() => {
-    if (!topThreePerFacility.length) return null;
-    return [...topThreePerFacility].sort(
+    if (!bestRows.length) return null;
+    return [...bestRows].sort(
       (a, b) => Number(a.avg_percent) - Number(b.avg_percent)
     )[0];
-  }, [topThreePerFacility]);
+  }, [bestRows]);
 
-  const todayName = useMemo(
-  () =>
-    new Intl.DateTimeFormat("en-US", {
-      weekday: "long",
-      timeZone: "America/Los_Angeles",
-    }).format(new Date()),
-  []
-);
+  const bestTodayPerFacility = useMemo(() => {
+    const todaysRows = bestRows.filter((row: any) => {
+      const rowDay = (row as any).day ?? (row as any).day_of_week;
+      return rowDay === todayName;
+    });
 
-const bestTodayPerFacility = useMemo(() => {
-  const todaysRows = bestRows.filter((row: any) => {
-    const rowDay = (row as any).day ?? (row as any).day_of_week;
-    return rowDay === todayName;
-  });
+    const grouped: Record<string, BestTimeRow> = {};
 
-  const grouped: Record<string, BestTimeRow> = {};
+    todaysRows.forEach((row) => {
+      const key = row.facility_name;
+      if (!grouped[key] || Number(row.avg_percent) < Number(grouped[key].avg_percent)) {
+        grouped[key] = row;
+      }
+    });
 
-  todaysRows.forEach((row) => {
-    const key = row.facility_name;
-    if (!grouped[key] || Number(row.avg_percent) < Number(grouped[key].avg_percent)) {
-      grouped[key] = row;
-    }
-  });
-
-  return Object.values(grouped).sort(
-    (a, b) => Number(a.avg_percent) - Number(b.avg_percent)
-  );
-}, [bestRows, todayName]);
+    return Object.values(grouped).sort(
+      (a, b) => Number(a.avg_percent) - Number(b.avg_percent)
+    );
+  }, [bestRows, todayName]);
 
   return (
     <div className="stack">
@@ -176,8 +173,8 @@ const bestTodayPerFacility = useMemo(() => {
           </div>
           <div className="small">
             {bestOverall
-  ? `${bestOverall.facility_name} · ${(bestOverall as any).day ?? (bestOverall as any).day_of_week ?? ""}`
-  : "Waiting for analysis data"}
+              ? `${bestOverall.facility_name} · ${(bestOverall as any).day ?? (bestOverall as any).day_of_week ?? ""}`
+              : "Waiting for analysis data"}
           </div>
         </section>
         <section className="card">
@@ -188,7 +185,7 @@ const bestTodayPerFacility = useMemo(() => {
         <section className="card">
           <div className="badge"><Clock3 size={16} /> Sync Loop</div>
           <div className="kpi">15 min / 2 hr</div>
-          <div className="small">Scraper every 5 minutes, analysis every 2 hours.</div>
+          <div className="small">Scraper every 15 minutes, analysis every 2 hours.</div>
         </section>
       </div>
 
@@ -209,7 +206,7 @@ const bestTodayPerFacility = useMemo(() => {
             </thead>
             <tbody>
               {topThreePerFacility.map((row, index) => (
-                <tr key={`${row.facility_name}-${row.day}-${row.hour}-${index}`}>
+                <tr key={`${row.facility_name}-${(row as any).day ?? (row as any).day_of_week}-${row.hour}-${index}`}>
                   <td>{row.facility_name}</td>
                   <td>{(row as any).day ?? (row as any).day_of_week}</td>
                   <td>{hourToLabel(Number(row.hour))}</td>
