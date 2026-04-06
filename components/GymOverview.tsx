@@ -115,12 +115,29 @@ export function GymOverview() {
     })[0];
   }, [bestRows]);
 
-  const bestTodayPerFacility = useMemo(() => {
+  const nextGoodTimePerFacility = useMemo(() => {
+    const nowParts = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false,
+      timeZone: "America/Los_Angeles",
+    }).formatToParts(new Date());
+
+    const currentHour = Number(nowParts.find((part) => part.type === "hour")?.value ?? 0);
+    const currentMinute = Number(nowParts.find((part) => part.type === "minute")?.value ?? 0);
+
     const todaysRows = bestRows.filter((row) => getRowDay(row) === todayName);
+
+    const eligibleRows = todaysRows.filter((row) => {
+      const slotHour = Number(row.hour);
+      if (Number.isNaN(slotHour)) return false;
+      if (currentMinute < 30) return slotHour >= currentHour;
+      return slotHour > currentHour;
+    });
 
     const grouped: Record<string, BestTimeRowExtended> = {};
 
-    todaysRows.forEach((row) => {
+    eligibleRows.forEach((row) => {
       const key = row.facility_name;
 
       if (!grouped[key]) {
@@ -133,14 +150,21 @@ export function GymOverview() {
 
       if (percentDiff < 0) {
         grouped[key] = row;
-      } else if (percentDiff === 0 && getSampleCount(row) > getSampleCount(current)) {
-        grouped[key] = row;
+      } else if (percentDiff === 0) {
+        const hourDiff = Number(row.hour) - Number(current.hour);
+        if (hourDiff < 0) {
+          grouped[key] = row;
+        } else if (hourDiff === 0 && getSampleCount(row) > getSampleCount(current)) {
+          grouped[key] = row;
+        }
       }
     });
 
     return Object.values(grouped).sort((a, b) => {
       const percentDiff = Number(a.avg_percent) - Number(b.avg_percent);
       if (percentDiff !== 0) return percentDiff;
+      const hourDiff = Number(a.hour) - Number(b.hour);
+      if (hourDiff !== 0) return hourDiff;
       return getSampleCount(b) - getSampleCount(a);
     });
   }, [bestRows, todayName]);
@@ -156,23 +180,23 @@ export function GymOverview() {
       <div className="grid grid-2">
         <section className="card">
           <div className="section-title">
-            <h2>Best Time Today</h2>
+            <h2>Next Good Time Today</h2>
             <span className="badge">
-              <Clock3 size={16} /> Best slot today by facility
+              <Clock3 size={16} /> Next low-occupancy slot later today
             </span>
           </div>
 
           <div style={{ display: "grid", gap: 16 }}>
-            {bestTodayPerFacility.length ? (
-              bestTodayPerFacility.map((row, index) => (
+            {nextGoodTimePerFacility.length ? (
+              nextGoodTimePerFacility.map((row, index) => (
                 <div key={`${row.facility_name}-${index}`}>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>
                     {row.facility_name}
                   </div>
                   <div>
-                    {getRowDay(row)} at {hourToLabel(Number(row.hour))}
+                    Next good time: {hourToLabel(Number(row.hour))} today
                   </div>
-                  <div>Avg occupancy: {Number(row.avg_percent).toFixed(1)}%</div>
+                  <div>Likely occupancy: {Number(row.avg_percent).toFixed(1)}%</div>
                   <div className="small">
                     Samples: {getSampleCount(row)} · Confidence:{" "}
                     {row.confidence ?? "N/A"}
@@ -180,7 +204,7 @@ export function GymOverview() {
                 </div>
               ))
             ) : (
-              <div>No best-time data yet for {todayName}.</div>
+              <div>No more good time windows left today for {todayName}.</div>
             )}
           </div>
         </section>
