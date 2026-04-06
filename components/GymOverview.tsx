@@ -31,6 +31,107 @@ type BestTimeRowExtended = BestTimeRow & {
   confidence?: string;
 };
 
+type FacilityWindow = {
+  facility_name: string;
+  startHour: number;
+  avg_percent: number;
+  peak_percent: number;
+  sample_count: number;
+  confidence: string;
+  windowHours: number[];
+};
+
+function getPacificNow() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    weekday: "long",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const lookup = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+
+  return {
+    weekday: lookup("weekday"),
+    hour: Number(lookup("hour") || 0),
+    minute: Number(lookup("minute") || 0),
+  };
+}
+
+function getRowDay(row: BestTimeRowExtended) {
+  return row.day ?? row.day_of_week ?? "";
+}
+
+function getSampleCount(row: BestTimeRowExtended) {
+  return Number(row.sample_count ?? 0);
+}
+
+function buildBestWindowForFacility(
+  rows: BestTimeRowExtended[],
+  currentHour: number,
+  currentMinute: number
+): FacilityWindow | null {
+  if (!rows.length) return null;
+
+  const rowsByHour = new Map<number, BestTimeRowExtended>();
+  rows.forEach((row) => {
+    rowsByHour.set(Number(row.hour), row);
+  });
+
+  const earliestAllowedHour = currentMinute > 30 ? currentHour + 1 : currentHour;
+
+  const candidates: FacilityWindow[] = [];
+
+  rowsByHour.forEach((row, hour) => {
+    if (hour < earliestAllowedHour) return;
+
+    const secondHour = rowsByHour.get(hour + 1);
+    if (!secondHour) return;
+
+    const thirdHour = rowsByHour.get(hour + 2);
+    const windowRows = [row, secondHour, thirdHour].filter(Boolean) as BestTimeRowExtended[];
+
+    const percents = windowRows.map((item) => Number(item.avg_percent));
+    const sampleCounts = windowRows.map((item) => getSampleCount(item));
+    const confidences = windowRows.map((item) => item.confidence ?? "N/A");
+
+    const avg_percent = percents.reduce((sum, value) => sum + value, 0) / percents.length;
+    const peak_percent = Math.max(...percents);
+    const sample_count = Math.min(...sampleCounts);
+    const confidence = confidences.includes("High")
+      ? "High"
+      : confidences.includes("Medium")
+      ? "Medium"
+      : confidences[0] ?? "N/A";
+
+    candidates.push({
+      facility_name: row.facility_name,
+      startHour: hour,
+      avg_percent,
+      peak_percent,
+      sample_count,
+      confidence,
+      windowHours: windowRows.map((item) => Number(item.hour)),
+    });
+  });
+
+  if (!candidates.length) return null;
+
+  return candidates.sort((a, b) => {
+    const avgDiff = a.avg_percent - b.avg_percent;
+    if (avgDiff !== 0) return avgDiff;
+
+    const peakDiff = a.peak_percent - b.peak_percent;
+    if (peakDiff !== 0) return peakDiff;
+
+    const sampleDiff = b.sample_count - a.sample_count;
+    if (sampleDiff !== 0) return sampleDiff;
+
+    return a.startHour - b.startHour;
+  })[0];
+}
+
 export function GymOverview() {
   const [occupancyRows, setOccupancyRows] = useState<OccupancyRow[]>([]);
   const [bestRows, setBestRows] = useState<BestTimeRowExtended[]>([]);
@@ -59,23 +160,14 @@ export function GymOverview() {
 
   const latest = useMemo(() => latestRows(occupancyRows), [occupancyRows]);
 
-  const todayName = useMemo(
-    () =>
-      new Intl.DateTimeFormat("en-US", {
-        weekday: "long",
-        timeZone: "America/Los_Angeles",
-      }).format(new Date()),
-    []
-  );
-
-  const getRowDay = (row: BestTimeRowExtended) => row.day ?? row.day_of_week ?? "";
-  const getSampleCount = (row: BestTimeRowExtended) =>
-    Number(row.sample_count ?? 0);
+  const pacificNow = useMemo(() => getPacificNow(), [bestRows, occupancyRows]);
+  const todayName = pacificNow.weekday;
 
   const topThreePerFacility = useMemo(() => {
+    const todaysRows = bestRows.filter((row) => getRowDay(row) === todayName);
     const grouped: Record<string, BestTimeRowExtended[]> = {};
 
-    bestRows.forEach((row) => {
+    todaysRows.forEach((row) => {
       const key = row.facility_name;
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(row);
@@ -103,7 +195,7 @@ export function GymOverview() {
       if (percentDiff !== 0) return percentDiff;
       return getSampleCount(b) - getSampleCount(a);
     });
-  }, [bestRows]);
+  }, [bestRows, todayName]);
 
   const bestOverall = useMemo(() => {
     if (!bestRows.length) return null;
@@ -115,59 +207,29 @@ export function GymOverview() {
     })[0];
   }, [bestRows]);
 
-  const nextGoodTimePerFacility = useMemo(() => {
-    const nowParts = new Intl.DateTimeFormat("en-US", {
-      hour: "numeric",
-      minute: "numeric",
-      hour12: false,
-      timeZone: "America/Los_Angeles",
-    }).formatToParts(new Date());
-
-    const currentHour = Number(nowParts.find((part) => part.type === "hour")?.value ?? 0);
-    const currentMinute = Number(nowParts.find((part) => part.type === "minute")?.value ?? 0);
-
+  const nextBestTodayPerFacility = useMemo(() => {
     const todaysRows = bestRows.filter((row) => getRowDay(row) === todayName);
+    const grouped: Record<string, BestTimeRowExtended[]> = {};
 
-    const eligibleRows = todaysRows.filter((row) => {
-      const slotHour = Number(row.hour);
-      if (Number.isNaN(slotHour)) return false;
-      if (currentMinute < 30) return slotHour >= currentHour;
-      return slotHour > currentHour;
-    });
-
-    const grouped: Record<string, BestTimeRowExtended> = {};
-
-    eligibleRows.forEach((row) => {
+    todaysRows.forEach((row) => {
       const key = row.facility_name;
-
-      if (!grouped[key]) {
-        grouped[key] = row;
-        return;
-      }
-
-      const current = grouped[key];
-      const percentDiff = Number(row.avg_percent) - Number(current.avg_percent);
-
-      if (percentDiff < 0) {
-        grouped[key] = row;
-      } else if (percentDiff === 0) {
-        const hourDiff = Number(row.hour) - Number(current.hour);
-        if (hourDiff < 0) {
-          grouped[key] = row;
-        } else if (hourDiff === 0 && getSampleCount(row) > getSampleCount(current)) {
-          grouped[key] = row;
-        }
-      }
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(row);
     });
 
-    return Object.values(grouped).sort((a, b) => {
-      const percentDiff = Number(a.avg_percent) - Number(b.avg_percent);
-      if (percentDiff !== 0) return percentDiff;
-      const hourDiff = Number(a.hour) - Number(b.hour);
-      if (hourDiff !== 0) return hourDiff;
-      return getSampleCount(b) - getSampleCount(a);
-    });
-  }, [bestRows, todayName]);
+    return Object.values(grouped)
+      .map((rows) =>
+        buildBestWindowForFacility(rows, pacificNow.hour, pacificNow.minute)
+      )
+      .filter(Boolean)
+      .sort((a, b) => {
+        const avgDiff = a!.avg_percent - b!.avg_percent;
+        if (avgDiff !== 0) return avgDiff;
+        const peakDiff = a!.peak_percent - b!.peak_percent;
+        if (peakDiff !== 0) return peakDiff;
+        return a!.facility_name.localeCompare(b!.facility_name);
+      }) as FacilityWindow[];
+  }, [bestRows, todayName, pacificNow.hour, pacificNow.minute]);
 
   return (
     <div className="stack">
@@ -182,29 +244,31 @@ export function GymOverview() {
           <div className="section-title">
             <h2>Next Good Time Today</h2>
             <span className="badge">
-              <Clock3 size={16} /> Next low-occupancy slot later today
+              <Clock3 size={16} /> Best next 1.5–2 hr window later today
             </span>
           </div>
 
           <div style={{ display: "grid", gap: 16 }}>
-            {nextGoodTimePerFacility.length ? (
-              nextGoodTimePerFacility.map((row, index) => (
-                <div key={`${row.facility_name}-${index}`}>
+            {nextBestTodayPerFacility.length ? (
+              nextBestTodayPerFacility.map((row) => (
+                <div key={`${row.facility_name}-${row.startHour}`}>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>
                     {row.facility_name}
                   </div>
                   <div>
-                    Next good time: {hourToLabel(Number(row.hour))} today
+                    Next good time: {hourToLabel(row.startHour)} today (~
+                    {row.avg_percent.toFixed(1)}% full)
                   </div>
-                  <div>Likely occupancy: {Number(row.avg_percent).toFixed(1)}%</div>
+                  <div className="small" style={{ marginTop: 4 }}>
+                    Best workout window: {row.windowHours.map((hour) => hourToLabel(hour)).join(" → ")}
+                  </div>
                   <div className="small">
-                    Samples: {getSampleCount(row)} · Confidence:{" "}
-                    {row.confidence ?? "N/A"}
+                    Peak during workout: ~{row.peak_percent.toFixed(1)}% · Samples: {row.sample_count} · {row.confidence} confidence
                   </div>
                 </div>
               ))
             ) : (
-              <div>No more good time windows left today for {todayName}.</div>
+              <div>No solid 1.5–2 hour workout windows are left for {todayName}.</div>
             )}
           </div>
         </section>
@@ -295,7 +359,7 @@ export function GymOverview() {
       <section className="card">
         <div className="section-title">
           <h2>Least Busy Time Blocks</h2>
-          <span className="badge">Top 3 slots per facility</span>
+          <span className="badge">Top 3 slots per facility for {todayName}</span>
         </div>
         <div className="table-wrap">
           <table>
