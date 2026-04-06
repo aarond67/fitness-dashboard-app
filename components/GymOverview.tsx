@@ -39,6 +39,7 @@ type FacilityWindow = {
   sample_count: number;
   confidence: string;
   windowHours: number[];
+  score: number;
 };
 
 function getPacificNow() {
@@ -50,7 +51,8 @@ function getPacificNow() {
     hour12: false,
   }).formatToParts(new Date());
 
-  const lookup = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const lookup = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "";
 
   return {
     weekday: lookup("weekday"),
@@ -80,23 +82,27 @@ function buildBestWindowForFacility(
   });
 
   const earliestAllowedHour = currentMinute > 30 ? currentHour + 1 : currentHour;
-
   const candidates: FacilityWindow[] = [];
 
   rowsByHour.forEach((row, hour) => {
     if (hour < earliestAllowedHour) return;
 
     const secondHour = rowsByHour.get(hour + 1);
-    if (!secondHour) return;
-
     const thirdHour = rowsByHour.get(hour + 2);
-    const windowRows = [row, secondHour, thirdHour].filter(Boolean) as BestTimeRowExtended[];
 
-    const percents = windowRows.map((item) => Number(item.avg_percent));
-    const sampleCounts = windowRows.map((item) => getSampleCount(item));
-    const confidences = windowRows.map((item) => item.confidence ?? "N/A");
+    // prefer 2-hour windows, but allow fallback to shorter if needed
+    const baseWindowRows = [row, secondHour].filter(Boolean) as BestTimeRowExtended[];
+    const extendedWindowRows = [row, secondHour, thirdHour].filter(Boolean) as BestTimeRowExtended[];
+    const chosenRows = extendedWindowRows.length >= 2 ? extendedWindowRows : baseWindowRows;
 
-    const avg_percent = percents.reduce((sum, value) => sum + value, 0) / percents.length;
+    if (chosenRows.length < 2) return;
+
+    const percents = chosenRows.map((item) => Number(item.avg_percent));
+    const sampleCounts = chosenRows.map((item) => getSampleCount(item));
+    const confidences = chosenRows.map((item) => item.confidence ?? "N/A");
+
+    const avg_percent =
+      percents.reduce((sum, value) => sum + value, 0) / percents.length;
     const peak_percent = Math.max(...percents);
     const sample_count = Math.min(...sampleCounts);
     const confidence = confidences.includes("High")
@@ -105,6 +111,18 @@ function buildBestWindowForFacility(
       ? "Medium"
       : confidences[0] ?? "N/A";
 
+    // score the window instead of filtering it out
+    // lower average is better
+    // lower peak is better
+    // slightly prefer more complete windows and stronger samples
+    const completenessPenalty = chosenRows.length === 2 ? 2 : 0;
+    const peakPenalty = peak_percent * 0.35;
+    const sampleBonus = Math.min(sample_count, 12) * 0.15;
+    const closenessBonus = hour === earliestAllowedHour ? 1 : 0;
+
+    const score =
+      avg_percent + peakPenalty + completenessPenalty - sampleBonus - closenessBonus;
+
     candidates.push({
       facility_name: row.facility_name,
       startHour: hour,
@@ -112,13 +130,43 @@ function buildBestWindowForFacility(
       peak_percent,
       sample_count,
       confidence,
-      windowHours: windowRows.map((item) => Number(item.hour)),
+      windowHours: chosenRows.map((item) => Number(item.hour)),
+      score,
     });
   });
 
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    // final fallback: pick the best single remaining slot
+    const singleSlotCandidates = [...rowsByHour.entries()]
+      .filter(([hour]) => hour >= earliestAllowedHour)
+      .map(([hour, row]) => ({
+        facility_name: row.facility_name,
+        startHour: hour,
+        avg_percent: Number(row.avg_percent),
+        peak_percent: Number(row.avg_percent),
+        sample_count: getSampleCount(row),
+        confidence: row.confidence ?? "N/A",
+        windowHours: [hour],
+        score: Number(row.avg_percent) + Number(row.avg_percent) * 0.35,
+      }));
+
+    if (!singleSlotCandidates.length) return null;
+
+    return singleSlotCandidates.sort((a, b) => {
+      const scoreDiff = a.score - b.score;
+      if (scoreDiff !== 0) return scoreDiff;
+
+      const avgDiff = a.avg_percent - b.avg_percent;
+      if (avgDiff !== 0) return avgDiff;
+
+      return a.startHour - b.startHour;
+    })[0];
+  }
 
   return candidates.sort((a, b) => {
+    const scoreDiff = a.score - b.score;
+    if (scoreDiff !== 0) return scoreDiff;
+
     const avgDiff = a.avg_percent - b.avg_percent;
     if (avgDiff !== 0) return avgDiff;
 
@@ -163,39 +211,21 @@ export function GymOverview() {
   const pacificNow = useMemo(() => getPacificNow(), [bestRows, occupancyRows]);
   const todayName = pacificNow.weekday;
 
-  const topThreePerFacility = useMemo(() => {
-    const todaysRows = bestRows.filter((row) => getRowDay(row) === todayName);
-    const grouped: Record<string, BestTimeRowExtended[]> = {};
+  const todayRows = useMemo(() => {
+    return bestRows.filter((row) => getRowDay(row) === todayName);
+  }, [bestRows, todayName]);
 
-    todaysRows.forEach((row) => {
-      const key = row.facility_name;
-      if (!grouped[key]) grouped[key] = [];
-      grouped[key].push(row);
-    });
+  const todaysLeastBusy = useMemo(() => {
+    return [...todayRows].sort((a, b) => {
+      const facilityCompare = a.facility_name.localeCompare(b.facility_name);
+      if (facilityCompare !== 0) return facilityCompare;
 
-    const result: BestTimeRowExtended[] = [];
-
-    Object.values(grouped).forEach((rows) => {
-      const topThree = [...rows]
-        .sort((a, b) => {
-          const percentDiff = Number(a.avg_percent) - Number(b.avg_percent);
-          if (percentDiff !== 0) return percentDiff;
-          return getSampleCount(b) - getSampleCount(a);
-        })
-        .slice(0, 3);
-
-      result.push(...topThree);
-    });
-
-    return result.sort((a, b) => {
-      if (a.facility_name !== b.facility_name) {
-        return a.facility_name.localeCompare(b.facility_name);
-      }
       const percentDiff = Number(a.avg_percent) - Number(b.avg_percent);
       if (percentDiff !== 0) return percentDiff;
+
       return getSampleCount(b) - getSampleCount(a);
     });
-  }, [bestRows, todayName]);
+  }, [todayRows]);
 
   const bestOverall = useMemo(() => {
     if (!bestRows.length) return null;
@@ -208,10 +238,9 @@ export function GymOverview() {
   }, [bestRows]);
 
   const nextBestTodayPerFacility = useMemo(() => {
-    const todaysRows = bestRows.filter((row) => getRowDay(row) === todayName);
     const grouped: Record<string, BestTimeRowExtended[]> = {};
 
-    todaysRows.forEach((row) => {
+    todayRows.forEach((row) => {
       const key = row.facility_name;
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(row);
@@ -223,13 +252,18 @@ export function GymOverview() {
       )
       .filter(Boolean)
       .sort((a, b) => {
+        const scoreDiff = a!.score - b!.score;
+        if (scoreDiff !== 0) return scoreDiff;
+
         const avgDiff = a!.avg_percent - b!.avg_percent;
         if (avgDiff !== 0) return avgDiff;
+
         const peakDiff = a!.peak_percent - b!.peak_percent;
         if (peakDiff !== 0) return peakDiff;
+
         return a!.facility_name.localeCompare(b!.facility_name);
       }) as FacilityWindow[];
-  }, [bestRows, todayName, pacificNow.hour, pacificNow.minute]);
+  }, [todayRows, pacificNow.hour, pacificNow.minute]);
 
   return (
     <div className="stack">
@@ -260,15 +294,17 @@ export function GymOverview() {
                     {row.avg_percent.toFixed(1)}% full)
                   </div>
                   <div className="small" style={{ marginTop: 4 }}>
-                    Best workout window: {row.windowHours.map((hour) => hourToLabel(hour)).join(" → ")}
+                    Best workout window:{" "}
+                    {row.windowHours.map((hour) => hourToLabel(hour)).join(" → ")}
                   </div>
                   <div className="small">
-                    Peak during workout: ~{row.peak_percent.toFixed(1)}% · Samples: {row.sample_count} · {row.confidence} confidence
+                    Peak during workout: ~{row.peak_percent.toFixed(1)}% · Samples:{" "}
+                    {row.sample_count} · {row.confidence} confidence
                   </div>
                 </div>
               ))
             ) : (
-              <div>No solid 1.5–2 hour workout windows are left for {todayName}.</div>
+              <div>No data-backed time blocks are left for {todayName}.</div>
             )}
           </div>
         </section>
@@ -359,7 +395,7 @@ export function GymOverview() {
       <section className="card">
         <div className="section-title">
           <h2>Least Busy Time Blocks</h2>
-          <span className="badge">Top 3 slots per facility for {todayName}</span>
+          <span className="badge">Today only: lowest expected occupancy by facility</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -374,7 +410,7 @@ export function GymOverview() {
               </tr>
             </thead>
             <tbody>
-              {topThreePerFacility.map((row, index) => (
+              {todaysLeastBusy.map((row, index) => (
                 <tr
                   key={`${row.facility_name}-${getRowDay(row)}-${row.hour}-${index}`}
                 >
