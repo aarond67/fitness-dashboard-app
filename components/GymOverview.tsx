@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { Activity, Clock3, Dumbbell, TrendingDown } from "lucide-react";
 import {
   asBoolean,
@@ -28,8 +28,8 @@ const chartFacilities = [
 ];
 
 const targetFacilities = ["Main Gym Fitness Gym", "RIMAC Fitness Gym"];
-const windowLengths = [4, 3]; // prefer 2h, then 1.5h
 const minSamplesPerBucket = 2;
+const durationOptions = [60, 90, 120, 150, 180];
 
 type BestTimeRowExtended = BestTimeRow & {
   day?: string;
@@ -49,6 +49,12 @@ type PredictorWindow = {
   confidence: string;
   source_scope: "same_day" | "all_days" | "mixed" | "none";
   score: number;
+};
+
+type FacilityPrediction = {
+  facility_name: string;
+  bestWindow: PredictorWindow | null;
+  hadAnyCandidate: boolean;
 };
 
 type BucketSummary = {
@@ -89,6 +95,23 @@ function getConfidence(count: number) {
   if (count >= 12) return "High";
   if (count >= 6) return "Medium";
   return "Low";
+}
+
+function durationToWindowLength(durationMinutes: number) {
+  return Math.max(2, Math.round(durationMinutes / 30));
+}
+
+function getEarliestFutureBucket(hour: number, minute: number) {
+  if (minute === 0 || minute === 30) return hour * 2 + (minute >= 30 ? 1 : 0);
+  if (minute < 30) return hour * 2 + 1;
+  return Math.min(48, hour * 2 + 2);
+}
+
+function sourceScopeLabel(scope: PredictorWindow["source_scope"]) {
+  if (scope === "same_day") return "today's weekday pattern";
+  if (scope === "all_days") return "all-days time fallback";
+  if (scope === "mixed") return "mixed same-day + fallback";
+  return "no source";
 }
 
 function percentile75(values: number[]) {
@@ -161,102 +184,131 @@ function normalizeRowsForPredictor(rows: OccupancyRow[]) {
   });
 }
 
-function buildPredictorWindow(
+function generatePredictorCandidates(
   facility: string,
   dayBuckets: Map<number, BucketSummary>,
   allBuckets: Map<number, BucketSummary>,
-  currentBucket: number
-): PredictorWindow | null {
+  currentBucket: number,
+  windowLength: number
+) {
   const candidates: PredictorWindow[] = [];
 
   for (let startBucket = currentBucket; startBucket < 48; startBucket += 1) {
-    for (const windowLength of windowLengths) {
-      const bucketRange = Array.from({ length: windowLength }, (_, index) => startBucket + index).filter(
-        (bucket) => bucket < 48
-      );
+    const bucketRange = Array.from({ length: windowLength }, (_, index) => startBucket + index).filter(
+      (bucket) => bucket < 48
+    );
 
-      if (bucketRange.length < 3) continue;
+    if (bucketRange.length < windowLength) continue;
 
-      const chosen: Array<{ summary: BucketSummary; source: "same_day" | "all_days" }> = [];
-      let sameDayCount = 0;
-      let fallbackCount = 0;
-      let failed = false;
+    const chosen: Array<{ summary: BucketSummary; source: "same_day" | "all_days" }> = [];
+    let sameDayCount = 0;
+    let fallbackCount = 0;
+    let failed = false;
 
-      for (const bucket of bucketRange) {
-        const daySummary = dayBuckets.get(bucket);
-        if (daySummary && daySummary.count >= minSamplesPerBucket) {
-          chosen.push({ summary: daySummary, source: "same_day" });
-          sameDayCount += 1;
-          continue;
-        }
-
-        const fallbackSummary = allBuckets.get(bucket);
-        if (fallbackSummary && fallbackSummary.count >= minSamplesPerBucket) {
-          chosen.push({ summary: fallbackSummary, source: "all_days" });
-          fallbackCount += 1;
-          continue;
-        }
-
-        failed = true;
-        break;
+    for (const bucket of bucketRange) {
+      const daySummary = dayBuckets.get(bucket);
+      if (daySummary && daySummary.count >= minSamplesPerBucket) {
+        chosen.push({ summary: daySummary, source: "same_day" });
+        sameDayCount += 1;
+        continue;
       }
 
-      if (failed || !chosen.length) continue;
+      const allSummary = allBuckets.get(bucket);
+      if (allSummary && allSummary.count >= minSamplesPerBucket) {
+        chosen.push({ summary: allSummary, source: "all_days" });
+        fallbackCount += 1;
+        continue;
+      }
 
-      const avg_percent =
-        chosen.reduce((sum, item) => sum + item.summary.avg, 0) / chosen.length;
-      const peak_percent = Math.max(...chosen.map((item) => item.summary.p75 || item.summary.avg));
-      const sample_floor = Math.min(...chosen.map((item) => item.summary.count));
-      const sample_total = chosen.reduce((sum, item) => sum + item.summary.count, 0);
-      const source_scope =
-        fallbackCount === 0
-          ? "same_day"
-          : sameDayCount === 0
-          ? "all_days"
-          : "mixed";
-
-      const fallbackPenalty = fallbackCount * 4;
-      const peakPenalty = peak_percent * 0.35;
-      const shortPenalty = windowLength === 3 ? 1.5 : 0;
-      const sampleBonus = Math.min(sample_total, 40) * 0.08;
-      const proximityBonus = Math.max(0, 2 - (startBucket - currentBucket) * 0.2);
-      const score = avg_percent + peakPenalty + fallbackPenalty + shortPenalty - sampleBonus - proximityBonus;
-
-      candidates.push({
-        facility_name: facility,
-        startBucket,
-        bucketRange,
-        avg_percent,
-        peak_percent,
-        sample_floor,
-        sample_total,
-        confidence: getConfidence(sample_floor),
-        source_scope,
-        score,
-      });
+      failed = true;
+      break;
     }
-  }
 
-  if (!candidates.length) return null;
+    if (failed || chosen.length !== windowLength) continue;
+
+    const averages = chosen.map((item) => item.summary.avg);
+    const peaks = chosen.map((item) => item.summary.p75);
+    const counts = chosen.map((item) => item.summary.count);
+
+    const avg_percent = averages.reduce((sum, value) => sum + value, 0) / averages.length;
+    const peak_percent = Math.max(...peaks);
+    const sample_floor = Math.min(...counts);
+    const sample_total = counts.reduce((sum, value) => sum + value, 0);
+    const variancePenalty = peak_percent - avg_percent;
+    const fallbackPenalty = fallbackCount * 4.5;
+    const stabilityPenalty = variancePenalty * 0.8;
+    const peakPenalty = peak_percent * 0.3;
+    const sampleBonus = Math.min(sample_total, 30) * 0.12;
+    const nearFutureBonus = Math.max(0, 2.5 - (startBucket - currentBucket) * 0.15);
+
+    const score = avg_percent + peakPenalty + stabilityPenalty + fallbackPenalty - sampleBonus - nearFutureBonus;
+
+    const source_scope: PredictorWindow["source_scope"] =
+      sameDayCount === windowLength
+        ? "same_day"
+        : sameDayCount === 0
+        ? "all_days"
+        : "mixed";
+
+    candidates.push({
+      facility_name: facility,
+      startBucket,
+      bucketRange,
+      avg_percent,
+      peak_percent,
+      sample_floor,
+      sample_total,
+      confidence: getConfidence(sample_floor),
+      source_scope,
+      score,
+    });
+  }
 
   return candidates.sort((a, b) => {
     const scoreDiff = a.score - b.score;
     if (scoreDiff !== 0) return scoreDiff;
 
-    const avgDiff = a.avg_percent - b.avg_percent;
-    if (avgDiff !== 0) return avgDiff;
-
     const peakDiff = a.peak_percent - b.peak_percent;
     if (peakDiff !== 0) return peakDiff;
 
+    const avgDiff = a.avg_percent - b.avg_percent;
+    if (avgDiff !== 0) return avgDiff;
+
     return a.startBucket - b.startBucket;
-  })[0];
+  });
+}
+
+function pickBestWindowForFacility(
+  facility: string,
+  dayBuckets: Map<number, BucketSummary>,
+  allBuckets: Map<number, BucketSummary>,
+  currentBucket: number,
+  windowLength: number,
+  maxPeakPercent: number
+): FacilityPrediction {
+  const candidates = generatePredictorCandidates(
+    facility,
+    dayBuckets,
+    allBuckets,
+    currentBucket,
+    windowLength
+  );
+
+  const filtered = candidates.filter((candidate) => candidate.peak_percent <= maxPeakPercent);
+
+  return {
+    facility_name: facility,
+    bestWindow: filtered[0] ?? null,
+    hadAnyCandidate: candidates.length > 0,
+  };
 }
 
 export function GymOverview() {
   const [occupancyRows, setOccupancyRows] = useState<OccupancyRow[]>([]);
   const [bestRows, setBestRows] = useState<BestTimeRowExtended[]>([]);
   const [error, setError] = useState("");
+  const [sessionMinutes, setSessionMinutes] = useState(120);
+  const [maxPeakPercent, setMaxPeakPercent] = useState(65);
   const [clockTick, setClockTick] = useState(0);
 
   useEffect(() => {
@@ -287,7 +339,7 @@ export function GymOverview() {
 
     load();
     const refreshId = window.setInterval(load, 5 * 60 * 1000);
-    const clockId = window.setInterval(() => setClockTick((value) => value + 1), 60 * 1000);
+    const clockId = window.setInterval(() => setClockTick((value: number) => value + 1), 60 * 1000);
 
     return () => {
       isMounted = false;
@@ -296,11 +348,21 @@ export function GymOverview() {
     };
   }, []);
 
+  function handleSessionChange(event: ChangeEvent<HTMLSelectElement>) {
+    setSessionMinutes(Number(event.target.value));
+  }
+
+  function handlePeakChange(event: ChangeEvent<HTMLInputElement>) {
+    const nextValue = Number(event.target.value);
+    setMaxPeakPercent(Number.isFinite(nextValue) ? nextValue : 65);
+  }
+
   const latest = useMemo(() => latestRows(occupancyRows), [occupancyRows]);
 
   const pacificNow = useMemo(() => getPacificNow(), [clockTick]);
   const todayName = pacificNow.weekday;
-  const currentBucket = pacificNow.hour * 2 + (pacificNow.minute >= 30 ? 1 : 0);
+  const currentBucket = getEarliestFutureBucket(pacificNow.hour, pacificNow.minute);
+  const selectedWindowLength = durationToWindowLength(sessionMinutes);
 
   const predictorRows = useMemo(() => normalizeRowsForPredictor(occupancyRows), [occupancyRows]);
 
@@ -310,19 +372,25 @@ export function GymOverview() {
 
     return targetFacilities
       .map((facility) =>
-        buildPredictorWindow(
+        pickBestWindowForFacility(
           facility,
           dayBuckets.get(facility) ?? new Map<number, BucketSummary>(),
           allBuckets.get(facility) ?? new Map<number, BucketSummary>(),
-          currentBucket
+          currentBucket,
+          selectedWindowLength,
+          maxPeakPercent
         )
       )
-      .filter(Boolean)
-      .sort((a, b) => a!.score - b!.score) as PredictorWindow[];
-  }, [predictorRows, todayName, currentBucket]);
+      .sort((a, b) => {
+        if (a.bestWindow && b.bestWindow) return a.bestWindow.score - b.bestWindow.score;
+        if (a.bestWindow) return -1;
+        if (b.bestWindow) return 1;
+        return a.facility_name.localeCompare(b.facility_name);
+      });
+  }, [predictorRows, todayName, currentBucket, selectedWindowLength, maxPeakPercent]);
 
   const todayRows = useMemo(() => {
-    return bestRows.filter((row) => getRowDay(row) === todayName);
+    return bestRows.filter((row: BestTimeRowExtended) => getRowDay(row) === todayName);
   }, [bestRows, todayName]);
 
   const todaysLeastBusy = useMemo(() => {
@@ -364,26 +432,61 @@ export function GymOverview() {
             </span>
           </div>
 
+          <div className="grid grid-2" style={{ marginBottom: 16 }}>
+            <label>
+              <div className="small" style={{ marginBottom: 6 }}>Usual gym session length</div>
+              <select value={sessionMinutes} onChange={handleSessionChange}>
+                {durationOptions.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes} minutes
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <div className="small" style={{ marginBottom: 6 }}>Highest peak you will accept</div>
+              <input
+                type="number"
+                min={5}
+                max={100}
+                step={1}
+                value={maxPeakPercent}
+                onChange={handlePeakChange}
+              />
+            </label>
+          </div>
+
           <div style={{ display: "grid", gap: 16 }}>
             {nextBestTodayPerFacility.length ? (
-              nextBestTodayPerFacility.map((row) => (
-                <div key={`${row.facility_name}-${row.startBucket}`}>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{row.facility_name}</div>
-                  <div>
-                    Next best window: {bucketToLabel(row.startBucket)} today (~
-                    {row.avg_percent.toFixed(1)}% full)
+              nextBestTodayPerFacility.map((prediction) => {
+                const row = prediction.bestWindow;
+                return (
+                  <div key={prediction.facility_name}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{prediction.facility_name}</div>
+                    {row ? (
+                      <>
+                        <div>
+                          Next best window: {bucketToLabel(row.startBucket)} today (~
+                          {row.avg_percent.toFixed(1)}% full)
+                        </div>
+                        <div className="small" style={{ marginTop: 4 }}>
+                          Workout window: {row.bucketRange.map((bucket) => bucketToLabel(bucket)).join(" → ")}
+                        </div>
+                        <div className="small">
+                          Peak during workout: ~{row.peak_percent.toFixed(1)}% · Samples floor: {row.sample_floor} · {row.confidence} confidence
+                        </div>
+                        <div className="small">
+                          Prediction source: {sourceScopeLabel(row.source_scope)}
+                        </div>
+                      </>
+                    ) : prediction.hadAnyCandidate ? (
+                      <div className="small">Your restrictions are too strict for {sessionMinutes} minutes and a max peak of {maxPeakPercent}%.</div>
+                    ) : (
+                      <div className="small">No future data-backed time blocks are left for {todayName}.</div>
+                    )}
                   </div>
-                  <div className="small" style={{ marginTop: 4 }}>
-                    Workout window: {row.bucketRange.map((bucket) => bucketToLabel(bucket)).join(" → ")}
-                  </div>
-                  <div className="small">
-                    Peak during workout: ~{row.peak_percent.toFixed(1)}% · Samples floor: {row.sample_floor} · {row.confidence} confidence
-                  </div>
-                  <div className="small">
-                    Prediction source: {row.source_scope === "same_day" ? "today's weekday pattern" : row.source_scope === "all_days" ? "all-days time fallback" : "mixed same-day + fallback"}
-                  </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div>No data-backed time blocks are left for {todayName}.</div>
             )}
@@ -459,7 +562,7 @@ export function GymOverview() {
             <Clock3 size={16} /> Sync Loop
           </div>
           <div className="kpi">5 min / 1 min</div>
-          <div className="small">Data refresh every 5 minutes, clock-aware predictor every minute.</div>
+          <div className="small">Data refresh every 5 minutes, clock-aware custom predictor every minute.</div>
         </section>
       </div>
 
