@@ -66,6 +66,14 @@ export function hourToLabel(hour: number) {
   return `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`;
 }
 
+export function bucketToLabel(bucket: number) {
+  const hour = Math.floor(bucket / 2);
+  const minutes = bucket % 2 === 0 ? "00" : "30";
+  const suffix = hour < 12 ? "AM" : "PM";
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${minutes} ${suffix}`;
+}
+
 export function occupancyImageName(facility: string) {
   return facility.split(" ").join("_");
 }
@@ -82,4 +90,18 @@ export function castBestTimes(rows: Record<string, string>[]): BestTimeRow[] {
 
 export function castOccupancy(rows: Record<string, string>[]): OccupancyRow[] {
   return rows as unknown as OccupancyRow[];
+}
+
+export function asNumber(value: string | number | undefined | null) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function asBoolean(value: string | boolean | undefined | null) {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return null;
 }

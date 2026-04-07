@@ -3,17 +3,33 @@ export type OccupancyRow = {
   day_of_week: string;
   date: string;
   time: string;
+  time_bucket_30?: string;
+  bucket_index?: string | number;
   facility_name: string;
   status: string;
   percent_full: string | number;
   raw_text?: string;
+  people?: string | number;
+  capacity?: string | number;
+  is_open?: string | boolean;
+  hour_summary?: string;
+  is_data_unavailable?: string | boolean;
+  is_valid_percent?: string | boolean;
+  is_valid_predictor_row?: string | boolean;
 };
 
 export type BestTimeRow = {
   facility_name: string;
-  day: string;
-  hour: string | number;
+  day?: string;
+  day_of_week?: string;
+  hour?: string | number;
+  bucket_index?: string | number;
+  time_bucket_30?: string;
   avg_percent: string | number;
+  sample_count?: string | number;
+  confidence?: string;
+  median_percent?: string | number;
+  p75_percent?: string | number;
 };
 
 export type MealItem = {
