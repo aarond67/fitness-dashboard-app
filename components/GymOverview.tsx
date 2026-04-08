@@ -303,6 +303,16 @@ function pickBestWindowForFacility(
   };
 }
 
+function getNewestTimestamp(rows: OccupancyRow[]) {
+  if (!rows.length) return "";
+
+  return rows.reduce((latest, row) => {
+    const rowTimestamp = row.timestamp ?? "";
+    const latestTimestamp = latest.timestamp ?? "";
+    return rowTimestamp > latestTimestamp ? row : latest;
+  }).timestamp ?? "";
+}
+
 export function GymOverview() {
   const [occupancyRows, setOccupancyRows] = useState<OccupancyRow[]>([]);
   const [bestRows, setBestRows] = useState<BestTimeRowExtended[]>([]);
@@ -316,16 +326,31 @@ export function GymOverview() {
 
     async function load() {
       try {
-        const occupancyPath = `${DEFAULT_BASE_URL}/ucsd_occupancy_history_cleaned.csv`;
-        const fallbackPath = `${DEFAULT_BASE_URL}/ucsd_occupancy_history.csv`;
+        const cleanedPath = `${DEFAULT_BASE_URL}/ucsd_occupancy_history_cleaned.csv`;
+        const rawPath = `${DEFAULT_BASE_URL}/ucsd_occupancy_history.csv`;
 
-        const occupancyPromise = fetchText(occupancyPath).catch(() => fetchText(fallbackPath));
-        const bestPromise = fetchText(`${DEFAULT_BASE_URL}/best_times_summary.csv`).catch(() => "");
+        const [cleanedRaw, rawCsvRaw, bestCsvRaw] = await Promise.all([
+          fetchText(cleanedPath).catch(() => ""),
+          fetchText(rawPath).catch(() => ""),
+          fetchText(`${DEFAULT_BASE_URL}/best_times_summary.csv`).catch(() => ""),
+        ]);
 
-        const [occRaw, bestCsvRaw] = await Promise.all([occupancyPromise, bestPromise]);
         if (!isMounted) return;
 
-        setOccupancyRows(castOccupancy(parseCSV(occRaw)));
+        const cleanedRows = cleanedRaw ? castOccupancy(parseCSV(cleanedRaw)) : [];
+        const rawRows = rawCsvRaw ? castOccupancy(parseCSV(rawCsvRaw)) : [];
+
+        const newestCleaned = getNewestTimestamp(cleanedRows);
+        const newestRaw = getNewestTimestamp(rawRows);
+
+        const chosenRows =
+          newestRaw > newestCleaned
+            ? rawRows
+            : cleanedRows.length
+            ? cleanedRows
+            : rawRows;
+
+        setOccupancyRows(chosenRows);
         setBestRows(bestCsvRaw ? (castBestTimes(parseCSV(bestCsvRaw)) as BestTimeRowExtended[]) : []);
         setError("");
       } catch (err) {
@@ -480,7 +505,9 @@ export function GymOverview() {
                         </div>
                       </>
                     ) : prediction.hadAnyCandidate ? (
-                      <div className="small">Your restrictions are too strict for {sessionMinutes} minutes and a max peak of {maxPeakPercent}%.</div>
+                      <div className="small">
+                        Your restrictions are too strict for {sessionMinutes} minutes and a max peak of {maxPeakPercent}%.
+                      </div>
                     ) : (
                       <div className="small">No future data-backed time blocks are left for {todayName}.</div>
                     )}
