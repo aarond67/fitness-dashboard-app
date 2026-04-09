@@ -320,11 +320,12 @@ export function GymOverview() {
   const [sessionMinutes, setSessionMinutes] = useState(120);
   const [maxPeakPercent, setMaxPeakPercent] = useState(65);
   const [clockTick, setClockTick] = useState(0);
+  const [liveSnapshotRows, setLiveSnapshotRows] = useState<OccupancyRow[]>([]);
 
   useEffect(() => {
     let isMounted = true;
 
-    async function load() {
+    async function loadHistorical() {
       try {
         const cleanedPath = `${DEFAULT_BASE_URL}/ucsd_occupancy_history_cleaned.csv`;
         const rawPath = `${DEFAULT_BASE_URL}/ucsd_occupancy_history.csv`;
@@ -357,18 +358,36 @@ export function GymOverview() {
         console.error(err);
         if (!isMounted) return;
         setError(
-          "Could not load live gym data. Check the GitHub data URL in NEXT_PUBLIC_GYM_DATA_BASE_URL."
+          "Could not load gym history data. Check the GitHub data URL in NEXT_PUBLIC_GYM_DATA_BASE_URL."
         );
       }
     }
 
-    load();
-    const refreshId = window.setInterval(load, 5 * 60 * 1000);
+    async function loadLiveSnapshot() {
+      try {
+        const response = await fetch(`/api/waitz-current?t=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("Failed to fetch live Waitz snapshot");
+        const rows = (await response.json()) as OccupancyRow[];
+        if (!isMounted) return;
+        setLiveSnapshotRows(rows);
+      } catch (err) {
+        console.error(err);
+        if (!isMounted) return;
+        setLiveSnapshotRows([]);
+      }
+    }
+
+    loadHistorical();
+    loadLiveSnapshot();
+
+    const historicalRefreshId = window.setInterval(loadHistorical, 5 * 60 * 1000);
+    const liveRefreshId = window.setInterval(loadLiveSnapshot, 60 * 1000);
     const clockId = window.setInterval(() => setClockTick((value: number) => value + 1), 60 * 1000);
 
     return () => {
       isMounted = false;
-      window.clearInterval(refreshId);
+      window.clearInterval(historicalRefreshId);
+      window.clearInterval(liveRefreshId);
       window.clearInterval(clockId);
     };
   }, []);
@@ -383,6 +402,7 @@ export function GymOverview() {
   }
 
   const latest = useMemo(() => latestRows(occupancyRows), [occupancyRows]);
+  const currentSnapshotRows = useMemo(() => (liveSnapshotRows.length ? liveSnapshotRows : latest), [liveSnapshotRows, latest]);
 
   const pacificNow = useMemo(() => getPacificNow(), [clockTick]);
   const todayName = pacificNow.weekday;
@@ -524,7 +544,7 @@ export function GymOverview() {
           <div className="section-title">
             <h2>Current Snapshot</h2>
             <span className="badge">
-              <Activity size={16} /> Latest by facility
+              <Activity size={16} /> Live from Waitz
             </span>
           </div>
           <div className="table-wrap">
@@ -538,7 +558,7 @@ export function GymOverview() {
                 </tr>
               </thead>
               <tbody>
-                {latest.map((row) => (
+                {currentSnapshotRows.map((row) => (
                   <tr key={row.facility_name}>
                     <td>{row.facility_name}</td>
                     <td>{row.status}</td>
@@ -580,7 +600,7 @@ export function GymOverview() {
           <div className="badge">
             <Activity size={16} /> Facilities Tracked
           </div>
-          <div className="kpi">{latest.length || "--"}</div>
+          <div className="kpi">{currentSnapshotRows.length || "--"}</div>
           <div className="small">Pulled from your GitHub scraper repo.</div>
         </section>
 
