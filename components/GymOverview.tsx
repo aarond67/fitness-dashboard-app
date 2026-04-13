@@ -493,6 +493,18 @@ export function GymOverview() {
     setMaxPeakPercent(Number.isFinite(nextValue) ? nextValue : 65);
   }
 
+  function handlePlannedFacilityChange(event: ChangeEvent<HTMLSelectElement>) {
+    setPlannedFacility(event.target.value);
+  }
+
+  function handlePlannedStartChange(event: ChangeEvent<HTMLSelectElement>) {
+    setPlannedStartBucket(Number(event.target.value));
+  }
+  
+  function handlePlannedDurationChange(event: ChangeEvent<HTMLSelectElement>) {
+    setPlannedDurationMinutes(Number(event.target.value));
+  }
+
   const latest = useMemo(() => latestRows(occupancyRows), [occupancyRows]);
   const currentSnapshotRows = useMemo(() => (liveSnapshotRows.length ? liveSnapshotRows : latest), [liveSnapshotRows, latest]);
 
