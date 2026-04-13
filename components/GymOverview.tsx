@@ -64,6 +64,27 @@ type BucketSummary = {
   count: number;
 };
 
+type SimulatedBucketPoint = {
+  bucket: number;
+  label: string;
+  avg_percent: number;
+  peak_percent: number;
+  count: number;
+  source: "same_day" | "all_days";
+};
+
+type PlannedWorkoutSimulation = {
+  facility_name: string;
+  startBucket: number;
+  endBucket: number;
+  durationMinutes: number;
+  buckets: SimulatedBucketPoint[];
+  avg_percent: number;
+  peak_percent: number;
+  confidence: string;
+  source_scope: "same_day" | "all_days" | "mixed" | "none";
+};
+
 function getPacificNow() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Los_Angeles",
@@ -303,6 +324,74 @@ function pickBestWindowForFacility(
   };
 }
 
+function getStartTimeOptions() {
+  return Array.from({ length: 34 }, (_, index) => 12 + index).map((bucket) => ({
+    value: bucket,
+    label: bucketToLabel(bucket),
+  }));
+}
+
+function simulatePlannedWorkout(
+  facility: string,
+  dayBuckets: Map<number, BucketSummary>,
+  allBuckets: Map<number, BucketSummary>,
+  startBucket: number,
+  durationMinutes: number
+): PlannedWorkoutSimulation | null {
+  const windowLength = durationToWindowLength(durationMinutes);
+  const bucketRange = Array.from({ length: windowLength }, (_, index) => startBucket + index);
+
+  if (!bucketRange.length || bucketRange[bucketRange.length - 1] >= 48) return null;
+
+  const points: SimulatedBucketPoint[] = [];
+  let sameDayCount = 0;
+  let fallbackCount = 0;
+
+  for (const bucket of bucketRange) {
+    const daySummary = dayBuckets.get(bucket);
+    const allSummary = allBuckets.get(bucket);
+    const chosen = daySummary && daySummary.count >= minSamplesPerBucket ? daySummary : allSummary;
+
+    if (!chosen || chosen.count < minSamplesPerBucket) return null;
+
+    const source = chosen === daySummary ? "same_day" : "all_days";
+    if (source === "same_day") sameDayCount += 1;
+    else fallbackCount += 1;
+
+    points.push({
+      bucket,
+      label: bucketToLabel(bucket),
+      avg_percent: chosen.avg,
+      peak_percent: chosen.p75,
+      count: chosen.count,
+      source,
+    });
+  }
+
+  const avg_percent = points.reduce((sum, point) => sum + point.avg_percent, 0) / points.length;
+  const peak_percent = Math.max(...points.map((point) => point.peak_percent));
+  const sample_floor = Math.min(...points.map((point) => point.count));
+
+  const source_scope: PlannedWorkoutSimulation["source_scope"] =
+    sameDayCount === windowLength
+      ? "same_day"
+      : sameDayCount === 0
+      ? "all_days"
+      : "mixed";
+
+  return {
+    facility_name: facility,
+    startBucket,
+    endBucket: bucketRange[bucketRange.length - 1],
+    durationMinutes,
+    buckets: points,
+    avg_percent,
+    peak_percent,
+    confidence: getConfidence(sample_floor),
+    source_scope,
+  };
+}
+
 function getNewestTimestamp(rows: OccupancyRow[]) {
   if (!rows.length) return "";
 
@@ -319,6 +408,9 @@ export function GymOverview() {
   const [error, setError] = useState("");
   const [sessionMinutes, setSessionMinutes] = useState(120);
   const [maxPeakPercent, setMaxPeakPercent] = useState(65);
+  const [plannedFacility, setPlannedFacility] = useState(targetFacilities[0]);
+  const [plannedStartBucket, setPlannedStartBucket] = useState(24);
+  const [plannedDurationMinutes, setPlannedDurationMinutes] = useState(60);
   const [clockTick, setClockTick] = useState(0);
   const [liveSnapshotRows, setLiveSnapshotRows] = useState<OccupancyRow[]>([]);
 
@@ -460,6 +552,21 @@ export function GymOverview() {
     })[0];
   }, [bestRows]);
 
+  const startTimeOptions = useMemo(() => getStartTimeOptions(), []);
+
+  const plannedWorkoutSimulation = useMemo(() => {
+    const dayBuckets = buildBucketSummaries(predictorRows, todayName);
+    const allBuckets = buildBucketSummaries(predictorRows);
+
+    return simulatePlannedWorkout(
+      plannedFacility,
+      dayBuckets.get(plannedFacility) ?? new Map<number, BucketSummary>(),
+      allBuckets.get(plannedFacility) ?? new Map<number, BucketSummary>(),
+      plannedStartBucket,
+      plannedDurationMinutes
+    );
+  }, [predictorRows, todayName, plannedFacility, plannedStartBucket, plannedDurationMinutes]);
+
   return (
     <div className="stack">
       {error ? (
@@ -571,6 +678,96 @@ export function GymOverview() {
           </div>
         </section>
       </div>
+
+      <section className="card">
+        <div className="section-title">
+          <h2>Planned Workout Forecast</h2>
+          <span className="badge">Pick a start time and see the likely crowding through your workout</span>
+        </div>
+
+        <div className="grid grid-3" style={{ marginBottom: 16 }}>
+          <label>
+            <div className="small" style={{ marginBottom: 6 }}>Gym</div>
+            <select value={plannedFacility} onChange={handlePlannedFacilityChange}>
+              {targetFacilities.map((facility) => (
+                <option key={facility} value={facility}>
+                  {facility}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <div className="small" style={{ marginBottom: 6 }}>Workout start time</div>
+            <select value={plannedStartBucket} onChange={handlePlannedStartChange}>
+              {startTimeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <div className="small" style={{ marginBottom: 6 }}>Workout length</div>
+            <select value={plannedDurationMinutes} onChange={handlePlannedDurationChange}>
+              {durationOptions.map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {minutes} minutes
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {plannedWorkoutSimulation ? (
+          <div className="stack">
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                {plannedWorkoutSimulation.facility_name} · {bucketToLabel(plannedWorkoutSimulation.startBucket)} start
+              </div>
+              <div>
+                Expected average during workout: ~{plannedWorkoutSimulation.avg_percent.toFixed(1)}% full
+              </div>
+              <div className="small" style={{ marginTop: 4 }}>
+                Highest peak during workout: ~{plannedWorkoutSimulation.peak_percent.toFixed(1)}%
+              </div>
+              <div className="small">
+                Window ends around {bucketToLabel(plannedWorkoutSimulation.endBucket + 1)} · {plannedWorkoutSimulation.confidence} confidence · {sourceScopeLabel(plannedWorkoutSimulation.source_scope)}
+              </div>
+            </div>
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time block</th>
+                    <th>Expected avg</th>
+                    <th>Possible peak</th>
+                    <th>Samples</th>
+                    <th>Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {plannedWorkoutSimulation.buckets.map((point) => (
+                    <tr key={`${plannedWorkoutSimulation.facility_name}-${point.bucket}`}>
+                      <td>{point.label}</td>
+                      <td>{point.avg_percent.toFixed(1)}%</td>
+                      <td>{point.peak_percent.toFixed(1)}%</td>
+                      <td>{point.count}</td>
+                      <td>{point.source === "same_day" ? "today's weekday" : "all-days fallback"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="small">
+            Not enough matching data to forecast that exact start time and duration yet. Try another start time or a shorter workout.
+          </div>
+        )}
+      </section>
 
       <div className="grid grid-4">
         <section className="card">
