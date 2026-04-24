@@ -20,14 +20,8 @@ const DEFAULT_BASE_URL =
   process.env.NEXT_PUBLIC_GYM_DATA_BASE_URL ||
   "https://aarond67.github.io/ucsd-gym-tracker";
 
-const chartFacilities = [
-  "Main Gym Fitness Gym",
-  "RIMAC Fitness Gym",
-  "Outback Climbing Center",
-  "Triton Esports Center",
-];
-
 const targetFacilities = ["Main Gym Fitness Gym", "RIMAC Fitness Gym"];
+const chartFacilities = targetFacilities;
 const minSamplesPerBucket = 2;
 const durationOptions = [60, 90, 120, 150, 180];
 
@@ -36,6 +30,7 @@ type BestTimeRowExtended = BestTimeRow & {
   day_of_week?: string;
   sample_count?: string | number;
   confidence?: string;
+  time_bucket_15?: string;
 };
 
 type PredictorWindow = {
@@ -110,6 +105,16 @@ function getRowDay(row: BestTimeRowExtended) {
 
 function getSampleCount(row: BestTimeRowExtended) {
   return Number(row.sample_count ?? 0);
+}
+
+function getTimeBlockLabel(row: BestTimeRowExtended) {
+  if (row.time_bucket_15) return row.time_bucket_15;
+  if (row.time_bucket_30) return row.time_bucket_30;
+
+  const bucket = asNumber(row.bucket_index);
+  if (bucket !== null) return bucketToLabel(bucket);
+
+  return hourToLabel(Number(row.hour ?? 0));
 }
 
 function getConfidence(count: number) {
@@ -543,15 +548,18 @@ export function GymOverview() {
   }, [bestRows, todayName]);
 
   const todaysLeastBusy = useMemo(() => {
-    return [...todayRows].sort((a, b) => {
-      const facilityCompare = a.facility_name.localeCompare(b.facility_name);
-      if (facilityCompare !== 0) return facilityCompare;
+    return [...todayRows]
+      .filter((row) => targetFacilities.includes(row.facility_name))
+      .sort((a, b) => {
+        const percentDiff = Number(a.avg_percent) - Number(b.avg_percent);
+        if (percentDiff !== 0) return percentDiff;
 
-      const percentDiff = Number(a.avg_percent) - Number(b.avg_percent);
-      if (percentDiff !== 0) return percentDiff;
+        const sampleDiff = getSampleCount(b) - getSampleCount(a);
+        if (sampleDiff !== 0) return sampleDiff;
 
-      return getSampleCount(b) - getSampleCount(a);
-    });
+        return a.facility_name.localeCompare(b.facility_name);
+      })
+      .slice(0, 3);
   }, [todayRows]);
 
   const bestOverall = useMemo(() => {
@@ -824,8 +832,8 @@ export function GymOverview() {
 
       <section className="card">
         <div className="section-title">
-          <h2>Least Busy Time Blocks</h2>
-          <span className="badge">Today only: lowest expected occupancy by facility</span>
+          <h2>Top 3 Least Busy Times Today</h2>
+          <span className="badge">Today only: three lowest expected occupancy blocks</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -844,11 +852,7 @@ export function GymOverview() {
                 <tr key={`${row.facility_name}-${getRowDay(row)}-${row.hour ?? row.bucket_index}-${index}`}>
                   <td>{row.facility_name}</td>
                   <td>{getRowDay(row)}</td>
-                  <td>
-                    {row.time_bucket_30
-                      ? bucketToLabel(asNumber(row.bucket_index) ?? 0)
-                      : hourToLabel(Number(row.hour ?? 0))}
-                  </td>
+                  <td>{getTimeBlockLabel(row)}</td>
                   <td>{Number(row.avg_percent).toFixed(1)}%</td>
                   <td>{getSampleCount(row)}</td>
                   <td>{row.confidence ?? "N/A"}</td>
@@ -862,7 +866,7 @@ export function GymOverview() {
       <section className="card">
         <div className="section-title">
           <h2>Heatmaps & Hourly Charts</h2>
-          <span className="badge">Pulled from generated PNGs</span>
+          <span className="badge">Main + RIMAC only</span>
         </div>
         <div className="stack">
           {chartFacilities.map((facility) => {
