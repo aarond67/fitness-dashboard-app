@@ -3,6 +3,8 @@ export type OccupancyRow = {
   day_of_week: string;
   date: string;
   time: string;
+  time_bucket_15?: string;
+  bucket_index_15?: string | number;
   time_bucket_30?: string;
   bucket_index?: string | number;
   facility_name: string;
